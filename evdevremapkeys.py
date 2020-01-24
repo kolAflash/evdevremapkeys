@@ -70,11 +70,15 @@ def get_active_window():
         root = get_active_window.display.screen().root
         NET_ACTIVE_WINDOW = get_active_window.display.intern_atom('_NET_ACTIVE_WINDOW')
         win_id = root.get_full_property(NET_ACTIVE_WINDOW,
-                                        Xlib.X.AnyPropertyType).value[0]
+                                        Xlib.X.AnyPropertyType).value
+        if len(win_id):
+            win_id = win_id[0]
+        else:
+            return None
         window_obj = get_active_window.display.create_resource_object('window', win_id)
         cls = window_obj.get_wm_class() if window_obj else None
         return cls[1] if cls else None
-    except (Xlib.error.DisplayConnectionError, Xlib.error.BadWindow, BrokenPipeError):
+    except (Xlib.error.DisplayConnectionError, Xlib.error.BadWindow):
         return None
 
 
