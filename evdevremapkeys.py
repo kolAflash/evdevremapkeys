@@ -78,7 +78,13 @@ def get_active_window():
         window_obj = get_active_window.display.create_resource_object('window', win_id)
         cls = window_obj.get_wm_class() if window_obj else None
         return cls[1] if cls else None
-    except (Xlib.error.DisplayConnectionError, Xlib.error.BadWindow):
+    except (Xlib.error.DisplayConnectionError, Xlib.error.BadWindow) as e:
+        print("Caught exception in get_active_window: ", e)
+        return None
+    except TypeError as e:
+        print("Workaround for XLib bug: ", e)
+        get_active_window.display.close()
+        get_active_window.display = None
         return None
 
 
