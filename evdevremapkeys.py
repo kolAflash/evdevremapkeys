@@ -49,6 +49,48 @@ active_remapped_keys = {}  # Keys activated as a result of remapping
 active_output_keys = {}  # Output keys currently active
 active_input_keys = {}  # Input keys currently active
 
+# Needed to handle the effects of multiscancode keys.
+repeated_input_keys = {}
+last_input_actions_ary = [0 for i in range(256)]
+lock_input_keys = set()
+# Multiscancode keys show two types of behaviour A and B (describing events):
+#   A: press and hold affected key until it repeats
+#     type=EV_MSC code=MSC_SCAN     value=affected_key
+#     type=EV_KEY code=affected_key value=1
+#     type=EV_SYN code=0            value=0
+#     type=EV_MSC code=MSC_SCAN     value=affected_key
+#     type=EV_KEY code=affected_key value=2
+#     type=EV_SYN code=0            value=0
+#     # ... repeating last three lines
+#     # pressing and releasing multiscancode key
+#     # additional scancodes happen here...
+#     type=EV_MSC code=MSC_SCAN     value=affected_key
+#     type=EV_KEY code=affected_key value=0
+#     type=EV_SYN code=0            value=0
+#     # releasing affected key
+#     type=EV_MSC code=MSC_SCAN     value=affected_key
+#     type=EV_SYN code=0            value=0
+#   B: press affected key and immediately press multiscancode key
+#     type=EV_MSC code=MSC_SCAN     value=affected_key
+#     type=EV_KEY code=affected_key value=1
+#     type=EV_SYN code=0            value=0
+#     # pressing and releasing multiscancode key
+#     type=EV_MSC code=MSC_SCAN     value=affected_key
+#     type=EV_SYN code=0            value=0
+#     # additional scancodes happen here...
+#     type=EV_MSC code=MSC_SCAN     value=affected_key
+#     type=EV_KEY code=affected_key value=0
+#     type=EV_SYN code=0            value=0
+#     # releasing affected key
+#     type=EV_MSC code=MSC_SCAN     value=affected_key
+#     type=EV_SYN code=0            value=0
+# To detect A, we need to recognize if a key is repeating while an
+# affecting multiscancode key is being pressed.
+# To detect B we must recognize if a loose scancode (without up/down event)
+# appears after a key has been pressed without repeating.
+# When A or B has been detected, the affected key must not be released
+# until it appears (once more) loosely without up/down event.
+
 
 def write_event(output, event):
     if event.type == ecodes.EV_KEY:
@@ -89,20 +131,35 @@ def get_active_window():
 
 
 @asyncio.coroutine
-def handle_events(input, output, remappings, critical):
+def handle_events(input, output, remappings, multiscan_affecting, critical):
     while True:
         events = yield from input.async_read()  # noqa
         try:
+            possibly_loose_raw_scancode = None
             for event in events:
                 best_remapping = ([], None)  # (keys, remapping)
                 if event.type == ecodes.EV_KEY:
+                    if event.code == possibly_loose_raw_scancode:
+                        possibly_loose_raw_scancode = None
                     if DEBUG:
                         print("IN", event, active_input_keys,
                               active_output_keys, active_remapped_keys)
+                    last_input_actions_ary[event.code] = event.value
                     if event.value is 0:
                         active_input_keys[input.number].discard(event.code)
+                        repeated_input_keys[input.number].discard(event.code)
                     elif event.value is 1:
                         active_input_keys[input.number].add(event.code)
+                        affected_keys = multiscan_affecting.get(event.code)
+                        if affected_keys:
+                            for key in affected_keys:
+                                if key in repeated_input_keys[input.number]:
+                                    # Multiscancode key behaviour A:
+                                    #   Multiscancode key pressed after affected key with repeat.
+                                    lock_input_keys.add(key)
+                    elif event.value is 2:
+                        # Once a key is repeated, affecting multiscancode keys will trigger a behaviour A.
+                        repeated_input_keys[input.number].add(event.code)
                     active_keys = active_input_keys[input.number].copy()
                     active_keys.add(event.code)  # Needed to include code on keyup
                     # Check if there is any possible match excluding window class
@@ -126,6 +183,23 @@ def handle_events(input, output, remappings, critical):
                     if event.type == ecodes.EV_KEY and event.value is 1:
                         press_input_keys(input, output, event)
                     write_event(output, event)
+                if event.type == ecodes.EV_SYN and possibly_loose_raw_scancode:
+                    # EV_SYN without other events -> it's really a loose raw scancode!
+                    last_action = last_input_actions_ary[possibly_loose_raw_scancode]
+                    if last_action == 0:
+                        # Multiscancode key shadowed key-up. So we need to do that manually.
+                        lock_input_keys.discard(possibly_loose_raw_scancode)
+                        unlock_event = evdev.events.InputEvent(event.sec, event.usec,
+                                                        ecodes.EV_KEY, possibly_loose_raw_scancode, 0)
+                        write_event(output, unlock_event)
+                    elif last_action == 1:
+                        # Multiscancode key behaviour B:
+                        #   Multiscancode key pressed after affected key without repeat.
+                        lock_input_keys.add(possibly_loose_raw_scancode)
+                if event.type == ecodes.EV_MSC and event.code is 4:
+                    possibly_loose_raw_scancode = event.value
+                else:
+                    possibly_loose_raw_scancode = None
         except OSError as e:
             if critical:
                 print("Error for critical device '%s' (%s). Quitting." % (input.name, e))
@@ -158,6 +232,8 @@ def release_output_keys(output, cur_event, keys, remappings):
     to_release |= active_remapped_keys[output.number]
     # Only release keys that are actually pressed at the moment
     to_release &= active_output_keys[output.number]
+    # Only release keys that haven't pressed more than one time.
+    to_release -= lock_input_keys
     for key in to_release:
         active_remapped_keys[output.number].discard(key)
         event = evdev.events.InputEvent(cur_event.sec, cur_event.usec,
@@ -280,6 +356,15 @@ def load_config(config_override):
     with open(conf_path.as_posix(), 'r') as fd:
         config = yaml.safe_load(fd)
         for device in config['devices']:
+            device['multiscan_affecting'] = normalize_config(device['multiscan_affecting'])
+            device['multiscan_affecting'] = resolve_ecodes(device['multiscan_affecting'])
+            multiscan_affecting_tmp = {}
+            for multiscan_key, affected_dict in device['multiscan_affecting'].items():
+                affected_ary = []
+                for aff_key in affected_dict:
+                    affected_ary.append(aff_key['code'])
+                multiscan_affecting_tmp[multiscan_key[0]] = affected_ary
+            device['multiscan_affecting'] = multiscan_affecting_tmp
             device['remappings'] = normalize_config(device['remappings'])
             device['remappings'] = resolve_ecodes(device['remappings'])
 
@@ -399,6 +484,7 @@ def register_device(device, device_number):
     # EV_SYN is automatically added to uinput devices
     del caps[ecodes.EV_SYN]
 
+    multiscan_affecting = device['multiscan_affecting']
     remappings = device['remappings']
     extended = set(caps[ecodes.EV_KEY])
 
@@ -413,8 +499,9 @@ def register_device(device, device_number):
     active_remapped_keys[output.number] = set()
     active_output_keys[output.number] = set()
     active_input_keys[input.number] = set()
+    repeated_input_keys[input.number] = set()
 
-    asyncio.ensure_future(handle_events(input, output, remappings, critical))
+    asyncio.ensure_future(handle_events(input, output, remappings, multiscan_affecting, critical))
 
 
 @asyncio.coroutine
