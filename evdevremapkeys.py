@@ -163,6 +163,7 @@ def handle_events(input, output, remappings, multiscan_affecting, critical):
             possibly_loose_raw_scancode = None
             events = list(events)
             if DEBUG:
+                print('got ' + str(len(events)) + ' events in a row')
                 for event in events:
                     print(str(event.type) + ' ' + str(event.code) + ' ' + str(event.value))
             clean_events(events, multiscan_affecting)
@@ -212,7 +213,10 @@ def handle_events(input, output, remappings, multiscan_affecting, critical):
                     # a remapping was activated
                     if event.type == ecodes.EV_KEY and event.value is 1:
                         press_input_keys(input, output, event)
-                    write_event(output, event)
+                    if event.type != ecodes.EV_KEY or \
+                       event.value != 0 or \
+                       event.code not in lock_input_keys:
+                        write_event(output, event)
                 if event.type == ecodes.EV_SYN and possibly_loose_raw_scancode:
                     # EV_SYN without other events -> it's really a loose raw scancode!
                     last_action = last_input_actions_ary[possibly_loose_raw_scancode]
