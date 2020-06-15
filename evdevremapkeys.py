@@ -130,12 +130,42 @@ def get_active_window():
         return None
 
 
+# Suppress affected keys if affecting key is pressed too in the same "events" row.
+def clean_events(events, multiscan_affecting):
+    i = 0
+    while i < len(events):
+        event_i = events[i]
+        if event_i.type == ecodes.EV_KEY and \
+           event_i.value == 1:
+            # +2, because next is my own SYN event (0, 0, 0)
+            j = i + 2
+            while j < len(events):
+              event_j = events[j]
+              if event_j.type == event_i.type and \
+                 event_j.value == event_i.value and \
+                 event_j.code in multiscan_affecting.keys():
+                  if DEBUG:
+                      print('cleaning at ' + str(i) + ' code ' + str(event_i.code))
+                  del events[i+1]
+                  del events[i]
+                  del events[i-1]
+                  i -= 2
+                  j = len(events)  # end loop
+              j += 1
+        i += 1
+
+
 @asyncio.coroutine
 def handle_events(input, output, remappings, multiscan_affecting, critical):
     while True:
         events = yield from input.async_read()  # noqa
         try:
             possibly_loose_raw_scancode = None
+            events = list(events)
+            if DEBUG:
+                for event in events:
+                    print(str(event.type) + ' ' + str(event.code) + ' ' + str(event.value))
+            clean_events(events, multiscan_affecting)
             for event in events:
                 best_remapping = ([], None)  # (keys, remapping)
                 if event.type == ecodes.EV_KEY:
