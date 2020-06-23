@@ -51,6 +51,7 @@ active_input_keys = {}  # Input keys currently active
 
 # Needed to handle the effects of multiscancode keys.
 repeated_input_keys = {}
+msc_to_key_map = {}
 last_input_actions_ary = [0 for i in range(256)]
 lock_input_keys = set()
 # Multiscancode keys show two types of behaviour A and B (describing events):
@@ -167,15 +168,19 @@ def handle_events(input, output, remappings, multiscan_affecting, critical):
                 for event in events:
                     print(str(event.type) + ' ' + str(event.code) + ' ' + str(event.value))
             clean_events(events, multiscan_affecting)
-            for event in events:
+            i = 0
+            while i < len(events):
+                event = events[i]
                 best_remapping = ([], None)  # (keys, remapping)
                 if event.type == ecodes.EV_KEY:
-                    if event.code == possibly_loose_raw_scancode:
+                    if event.code == msc_to_key_map.get(possibly_loose_raw_scancode, possibly_loose_raw_scancode):
                         possibly_loose_raw_scancode = None
                     if DEBUG:
                         print("IN", event, active_input_keys,
                               active_output_keys, active_remapped_keys)
                     last_input_actions_ary[event.code] = event.value
+                    last_input_actions_ary[events[i-1].value] = event.value
+                    msc_to_key_map[events[i-1].value] = event.code
                     if event.value is 0:
                         active_input_keys[input.number].discard(event.code)
                         repeated_input_keys[input.number].discard(event.code)
@@ -188,6 +193,8 @@ def handle_events(input, output, remappings, multiscan_affecting, critical):
                                     # Multiscancode key behaviour A:
                                     #   Multiscancode key pressed after affected key with repeat.
                                     lock_input_keys.add(key)
+                                    if DEBUG:
+                                        print('A lock_input_keys (' +  str(key) + '): ' + str(lock_input_keys))
                     elif event.value is 2:
                         # Once a key is repeated, affecting multiscancode keys will trigger a behaviour A.
                         repeated_input_keys[input.number].add(event.code)
@@ -219,21 +226,28 @@ def handle_events(input, output, remappings, multiscan_affecting, critical):
                         write_event(output, event)
                 if event.type == ecodes.EV_SYN and possibly_loose_raw_scancode:
                     # EV_SYN without other events -> it's really a loose raw scancode!
-                    last_action = last_input_actions_ary[possibly_loose_raw_scancode]
+                    loose_key_code = msc_to_key_map[possibly_loose_raw_scancode]
+                    last_action = last_input_actions_ary[loose_key_code]
+                    if DEBUG:
+                        print('loose: ' + str(loose_key_code) + \
+                                '; lock_input_keys: ' + str(lock_input_keys))
                     if last_action == 0:
                         # Multiscancode key shadowed key-up. So we need to do that manually.
-                        lock_input_keys.discard(possibly_loose_raw_scancode)
+                        lock_input_keys.discard(loose_key_code)
                         unlock_event = evdev.events.InputEvent(event.sec, event.usec,
-                                                        ecodes.EV_KEY, possibly_loose_raw_scancode, 0)
+                                                        ecodes.EV_KEY, loose_key_code, 0)
                         write_event(output, unlock_event)
                     elif last_action == 1:
                         # Multiscancode key behaviour B:
                         #   Multiscancode key pressed after affected key without repeat.
-                        lock_input_keys.add(possibly_loose_raw_scancode)
+                        lock_input_keys.add(loose_key_code)
+                        if DEBUG:
+                            print('B lock_input_keys (' +  str(loose_key_code) + '): ' + str(lock_input_keys))
                 if event.type == ecodes.EV_MSC and event.code is 4:
                     possibly_loose_raw_scancode = event.value
                 else:
                     possibly_loose_raw_scancode = None
+                i += 1
         except OSError as e:
             if critical:
                 print("Error for critical device '%s' (%s). Quitting." % (input.name, e))
