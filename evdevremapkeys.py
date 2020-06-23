@@ -27,6 +27,7 @@ import functools
 from pathlib import Path
 import signal
 import sys
+import time
 
 import daemon
 import evdev
@@ -156,13 +157,31 @@ def clean_events(events, multiscan_affecting):
         i += 1
 
 
+def is_delayed_key(multiscan_delayed_keys, event):
+    if event.type == ecodes.EV_KEY and \
+       event.code in multiscan_delayed_keys and \
+       event.value in [1, 2]:
+        return True
+    return False
+
+
+def get_def(msc_to_key_map, key):
+    return msc_to_key_map.get(key, key)
+
+
 @asyncio.coroutine
-def handle_events(input, output, remappings, multiscan_affecting, critical):
+def handle_events(input, output, remappings, multiscan_affecting, multiscan_delayed_keys, critical):
     while True:
         events = yield from input.async_read()  # noqa
+        events = list(events)
+        if any(is_delayed_key(multiscan_delayed_keys, event) for event in events):
+            time.sleep(0.01)
+            try:
+                events = list(input.read()) + events
+            except BlockingIOError as e:
+                pass
         try:
             possibly_loose_raw_scancode = None
-            events = list(events)
             if DEBUG:
                 print('got ' + str(len(events)) + ' events in a row')
                 for event in events:
@@ -173,7 +192,7 @@ def handle_events(input, output, remappings, multiscan_affecting, critical):
                 event = events[i]
                 best_remapping = ([], None)  # (keys, remapping)
                 if event.type == ecodes.EV_KEY:
-                    if event.code == msc_to_key_map.get(possibly_loose_raw_scancode, possibly_loose_raw_scancode):
+                    if event.code == get_def(msc_to_key_map, possibly_loose_raw_scancode):
                         possibly_loose_raw_scancode = None
                     if DEBUG:
                         print("IN", event, active_input_keys,
@@ -226,7 +245,7 @@ def handle_events(input, output, remappings, multiscan_affecting, critical):
                         write_event(output, event)
                 if event.type == ecodes.EV_SYN and possibly_loose_raw_scancode:
                     # EV_SYN without other events -> it's really a loose raw scancode!
-                    loose_key_code = msc_to_key_map[possibly_loose_raw_scancode]
+                    loose_key_code = get_def(msc_to_key_map, possibly_loose_raw_scancode)
                     last_action = last_input_actions_ary[loose_key_code]
                     if DEBUG:
                         print('loose: ' + str(loose_key_code) + \
@@ -413,6 +432,7 @@ def load_config(config_override):
                     affected_ary.append(aff_key['code'])
                 multiscan_affecting_tmp[multiscan_key[0]] = affected_ary
             device['multiscan_affecting'] = multiscan_affecting_tmp
+            device['multiscan_delayed_keys'] = list(map(lambda c: ecodes.ecodes[c], device['multiscan_delayed_keys']))
             device['remappings'] = normalize_config(device['remappings'])
             device['remappings'] = resolve_ecodes(device['remappings'])
 
@@ -533,6 +553,7 @@ def register_device(device, device_number):
     del caps[ecodes.EV_SYN]
 
     multiscan_affecting = device['multiscan_affecting']
+    multiscan_delayed_keys = device['multiscan_delayed_keys']
     remappings = device['remappings']
     extended = set(caps[ecodes.EV_KEY])
 
@@ -549,7 +570,7 @@ def register_device(device, device_number):
     active_input_keys[input.number] = set()
     repeated_input_keys[input.number] = set()
 
-    asyncio.ensure_future(handle_events(input, output, remappings, multiscan_affecting, critical))
+    asyncio.ensure_future(handle_events(input, output, remappings, multiscan_affecting, multiscan_delayed_keys, critical))
 
 
 @asyncio.coroutine
