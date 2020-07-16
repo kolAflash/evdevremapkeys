@@ -53,7 +53,7 @@ active_input_keys = {}  # Input keys currently active
 # Needed to handle the effects of multiscancode keys.
 repeated_input_keys = {}
 msc_to_key_map = {}
-last_input_actions_ary = [0 for i in range(256)]
+last_input_actions_ary = [0 for i in range(512)]
 lock_input_keys = set()
 # Multiscancode keys show two types of behaviour A and B (describing events):
 #   A: press and hold affected key until it repeats
