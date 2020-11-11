@@ -15,8 +15,12 @@ devices:
       - KEY_LEFTCTRL
       - KEY_LEFTALT
   multiscan_delayed_keys:
+    - KEY_F14
     - KEY_F15
+    - KEY_F16
+    - KEY_LEFTALT
     - KEY_LEFTMETA
+    - KEY_LEFTCTRL
   remappings:
     KEY_F12:
       - KEY_HOME
