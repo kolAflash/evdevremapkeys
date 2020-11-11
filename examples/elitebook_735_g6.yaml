@@ -2,16 +2,16 @@ devices:
 - input_name: 'AT Translated Set 2 keyboard'
   output_name: remap-keyboard
   multiscan_affecting:
-    KEY_F13:
+    KEY_F13:          # 88 --------- (udev:F12 -> F13)
+      - KEY_LEFTCTRL  # 29
+      - KEY_LEFTALT   # 56
+    KEY_F14:          # 109 / 184 -- (udev: PRESENTATION -> F14)
       - KEY_LEFTCTRL
       - KEY_LEFTALT
-    KEY_F14:
-      - KEY_LEFTCTRL
+    KEY_F15:          # 102 / 185 -- (udev: CALL-UP -> F15)
       - KEY_LEFTALT
-    KEY_F15:
-      - KEY_LEFTALT
-      - KEY_LEFTMETA
-    KEY_F16:
+      - KEY_LEFTMETA  # 219 / 125
+    KEY_F16:          # 101 / 186 -- (udev: CALL-DOWN -> F16)
       - KEY_LEFTCTRL
       - KEY_LEFTALT
   multiscan_delayed_keys:
